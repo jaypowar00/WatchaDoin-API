@@ -33,7 +33,6 @@ class User(AbstractBaseUser, PermissionsMixin):
 	USERNAME_FIELD = 'username'
 	REQUIRED_FIELDS = ['email']
 
-	manager = managers.UserManager()
 	objects = managers.UserManager()
 
 	@property
