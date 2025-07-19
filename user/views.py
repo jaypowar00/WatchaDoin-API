@@ -18,6 +18,7 @@ from psycopg2 import OperationalError as Psycopg2OperationalError
 from config import settings
 from config.redis_client import redis_client
 from config.utils.token_service import generate_access_token, generate_refresh_token
+from user.models import User
 
 
 # --------------------------------------
@@ -31,6 +32,7 @@ def user_signup(request):
     email = request.data.get('email')
     username = request.data.get('username')
     password = request.data.get('password')
+    # Check for missing fields
     missing = [k for k, v in {'email': email, 'username': username, 'password': password}.items() if not v]
     if missing:
         return Response({
@@ -42,6 +44,7 @@ def user_signup(request):
         user = User(email=email, username=username)
         user.set_password(password)
         user.save()
+        logger.info(f"[+] User {user.uid} created an account.")
         return Response({
             'status': True,
             'message': 'User created!',
@@ -90,12 +93,13 @@ def user_login(request):
         })
     username = request.data.get('username')
     password = request.data.get('password')
-    user = get_user_model().objects.only('uid').get(username=username)
-    if not user:
+    try:
+        user = get_user_model().objects.only('uid').get(username=username)
+    except User.DoesNotExist:
         return Response(
             {
                 'status': False,
-                'message': 'User does not exist',
+                'message': 'User not found',
             }
         )
     if not user.check_password(password):
@@ -121,6 +125,7 @@ def user_login(request):
 @authentication_classes([])
 @permission_classes([AllowAny])
 def user_logout(request):
+    logger = logging.getLogger(__name__)
     authorization_header = request.headers.get('Authorization')
     access_token = None
     refresh_token = request.headers.get('refresh-token')
@@ -145,13 +150,12 @@ def user_logout(request):
             refresh_token = None
         except Exception:
             pass
-    print(f"access_token: {access_token}")
-    print(f"refresh_token: {refresh_token}")
     # Step 3: If both are missing or expired
     if not access_token and not refresh_token:
+        logger.info('[+] No valid token found. Possibly already logged out')
         return Response({
             'status': True,
-            'message': 'No valid token found. Possibly already logged out.',
+            'message': 'Logged out',
         })
 
     # Step 4: Check if already blacklisted
@@ -170,20 +174,20 @@ def user_logout(request):
             redis_client.setex(access_token, ttl, 'blacklisted')
 
     if already_blacklisted:
-        return Response({'status': True, 'message': 'Already logged out!'})
+        logger.info("[+] Already logged out")
+    else:
+        # Step 5: Add to Redis blacklist with TTL based on token expiry
+        if access_token and payload:
+            ttl = max(0, payload['exp'] - int(time.time()))
+            redis_client.setex(access_token, ttl, 'blacklisted')
 
-    # Step 5: Add to Redis blacklist with TTL based on token expiry
-    if access_token and payload:
-        ttl = max(0, payload['exp'] - int(time.time()))
-        redis_client.setex(access_token, ttl, 'blacklisted')
-
-    if refresh_token and refresh_payload:
-        ttl = max(0, refresh_payload['exp'] - int(time.time()))
-        redis_client.setex(refresh_token, ttl, 'blacklisted')
+        if refresh_token and refresh_payload:
+            ttl = max(0, refresh_payload['exp'] - int(time.time()))
+            redis_client.setex(refresh_token, ttl, 'blacklisted')
 
     return Response({
         'status': True,
-        'message': 'Successfully logged out!',
+        'message': 'Logged out',
     })
 
 
@@ -214,11 +218,12 @@ def refresh_token_view(request):
             'status': False,
             'message': 'Refresh token blacklisted!',
         })
-    user = get_user_model().objects.only('uid').filter(uid=payload['user_id']).first()
-    if user is None:
+    try:
+        user = get_user_model().objects.only('uid').get(uid=payload['user_id'])
+    except User.DoesNotExist:
         return Response({
             'status': False,
-            'message': 'User associated with received token does not exists anymore!',
+            'message': 'No user associated with received credentials',
         })
     # Blacklist current refresh token
     ttl = max(0, payload['exp'] - int(time.time())) if (payload and 'exp' in payload) else 0
@@ -250,3 +255,61 @@ def user_profile(request):
             'date_joined': user.date_joined
         }
     })
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def user_update(request):
+    logger = logging.getLogger(__name__)
+    user = request.user
+    email = request.data.get('email', None)
+    username = request.data.get('username', None)
+    password = request.data.get('password', None)
+    email = email if email and email != user.email else None
+    username = username if username and username != user.username else None
+    if email:
+        user.email = email
+    if username:
+        user.username = username
+    if password:
+        user.set_password(password)
+    if any([email, username, password]):
+        try:
+            user.save()
+        except IntegrityError as err:
+            err_msg = str(err)
+            dup_field = 'email' if 'email' in err_msg else 'username'
+            return Response({
+                'status': False,
+                'message': f'{dup_field} already taken by another user, try again with another {dup_field}',
+                'duplicate': dup_field
+            })
+        except (Psycopg2OperationalError, DjangoOperationalError):
+            logger.error("Database error:\n" + traceback.format_exc())
+            return Response({
+                'status': False,
+                'message': 'Database connection lost. Please try again later.'
+            })
+    logger.info(f" [+] User {user.uid} updated account info.")
+    return Response({
+        'status': True,
+        'message': 'User updated',
+    })
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def user_delete(request):
+    logger = logging.getLogger(__name__)
+    try:
+        uid = request.user.id
+        request.user.delete()
+        logger.info(f" [+] User {uid} deleted their account.")
+        return Response({
+            'status': True,
+            'message': 'User deleted',
+        })
+    except Exception as err:
+        logger.error("Unhandled exception: %s", err)
+        return Response({
+            'status': False,
+            'message': str(err),
+        })
