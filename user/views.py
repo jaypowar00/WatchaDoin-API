@@ -19,6 +19,7 @@ from config import settings
 from config.redis_client import redis_client
 from config.utils.token_service import generate_access_token, generate_refresh_token
 from user.models import User
+from config.utils.validators import validate_max_lengths
 
 
 # --------------------------------------
@@ -39,6 +40,12 @@ def user_signup(request):
             'status': False,
             'message': f"Registration Failed. Missing data for fields: {', '.join(missing)}"
         })
+    # Validate lengths
+    is_valid, error_response = validate_max_lengths(request.data, {
+        'email': 250, 'username': 250, 'password': 128
+    })
+    if not is_valid:
+        return error_response
     try:
         User = get_user_model()
         user = User(email=email, username=username)
@@ -261,6 +268,12 @@ def user_profile(request):
 def user_update(request):
     logger = logging.getLogger(__name__)
     user = request.user
+    # Validate lengths
+    is_valid, error_response = validate_max_lengths(request.data, {
+        'email': 250, 'username': 250, 'password': 128
+    })
+    if not is_valid:
+        return error_response
     email = request.data.get('email', None)
     username = request.data.get('username', None)
     password = request.data.get('password', None)
