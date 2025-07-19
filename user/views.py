@@ -359,7 +359,7 @@ def user_update(request):
 def user_delete(request):
     logger = logging.getLogger(__name__)
     try:
-        uid = request.user.id
+        uid = request.user.uid
         request.user.delete()
         logger.info(f" [+] User {uid} deleted their account.")
         return Response({
