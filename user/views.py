@@ -6,6 +6,8 @@ import traceback
 # Third-party
 import jwt
 import redis
+from django.shortcuts import render
+from django.utils.http import urlsafe_base64_decode
 from rest_framework.response import Response
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -16,10 +18,13 @@ from psycopg2 import OperationalError as Psycopg2OperationalError
 
 # Project/local
 from config import settings
-from config.redis_client import redis_client
-from config.utils.token_service import generate_access_token, generate_refresh_token
 from user.models import User
+from config.redis_client import redis_client
 from config.utils.validators import validate_max_lengths
+from config.utils.send_email import send_congratulations_email, send_verification_email
+from config.utils.token_service import (generate_access_token,
+                                        generate_email_verification_token,
+                                        generate_refresh_token)
 
 
 # --------------------------------------
@@ -52,13 +57,11 @@ def user_signup(request):
         user.set_password(password)
         user.save()
         logger.info(f"[+] User {user.uid} created an account.")
+        token = generate_email_verification_token(user)
+        send_verification_email(user, token)
         return Response({
             'status': True,
-            'message': 'User created!',
-            'tokens': {
-                'access_token': generate_access_token(user),
-                'refresh_token': generate_refresh_token(user),
-            },
+            'message': 'Verification email sent. Please verify to complete signup',
         })
     except IntegrityError as err:
         err_msg = str(err)
@@ -246,6 +249,48 @@ def refresh_token_view(request):
     })
 
 
+def verify_email_view(request):
+    uidb64 = request.GET.get('uid')
+    token = request.GET.get('token')
+    if token and redis_client.get(token):
+        return render(request, 'user/verification_failed.html', {
+            'reason': 'Invalid verification link',
+        })
+    if not token or not uidb64:
+        return render(request, 'user/verification_failed.html', {
+            'reason': 'Missing verification data',
+        })
+    try:
+        uid = urlsafe_base64_decode(uidb64).decode()
+        user = User.objects.only('uid').get(uid=uid)
+    except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+        print(f"Verification failed for uid={uidb64}")
+        return render(request, 'user/verification_failed.html', {
+            'reason': 'Invalid verification link.',
+        })
+
+    try:
+        # Check if uidb64 and token data aligns to avoid any invalid request attempts
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=['HS256'])
+        if payload['user_id'] != uid:
+            return render(request, 'user/verification_failed.html', {
+                'reason': 'Invalid verification link.',
+            })
+        # Update verify email flag
+        user.is_email_verified = True
+        user.save()
+        print(f"[✓] Email verified for {user.uid}")
+        ttl = max(0, payload['exp'] - int(time.time()))
+        redis_client.setex(token, ttl, 'blacklisted')
+        send_congratulations_email(user)
+        return render(request, 'user/verification_success.html')
+    except Exception as ex:
+        print(f"traceback: {traceback.format_exc()}")
+        return render(request, 'user/verification_failed.html', {
+            'reason': 'Expired or invalid verification data.',
+        })
+
+
 # --------------------------------------
 # USER MANAGEMENT VIEWS
 # --------------------------------------
@@ -259,6 +304,7 @@ def user_profile(request):
         'user': {
             'email': user.email,
             'username': user.username,
+            'is_email_verified': user.is_email_verified,
             'date_joined': user.date_joined
         }
     })

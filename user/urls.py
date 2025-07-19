@@ -7,6 +7,7 @@ urlpatterns = [
     path('auth/login', views.user_login, name='user_login'),
     path('auth/logout', views.user_logout, name='user_logout'),
     path('auth/refresh-token', views.refresh_token_view, name='refresh_token'),
+    path('auth/verify-email', views.verify_email_view, name='verify_token'),
 
     # USER MANAGEMENT
     path('manage/profile', views.user_profile, name='user_profile'),
