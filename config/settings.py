@@ -152,5 +152,6 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'user.authentication.SafeJWTAuthentication',
         'rest_framework.authentication.SessionAuthentication',
-    ]
+    ],
+    'EXCEPTION_HANDLER': 'config.utils.exceptions.custom_exception_handler',
 }
