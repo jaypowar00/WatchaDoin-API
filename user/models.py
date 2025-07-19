@@ -12,6 +12,7 @@ class User(AbstractBaseUser, PermissionsMixin):
 	password = models.CharField(_("password"), max_length=128)
 	is_admin = models.BooleanField(_("is admin"), default=False)
 	last_login = models.DateTimeField(_("last login"), blank=True, null=True)
+	is_email_verified = models.BooleanField(_("is email verified"), default=False)
 	date_joined = models.DateTimeField(default=timezone.now)
 
 	# Required for PermissionsMixin to work properly with admin
