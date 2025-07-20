@@ -6,6 +6,7 @@ import traceback
 # Third-party
 import jwt
 import redis
+from django.contrib.auth.hashers import make_password
 from django.shortcuts import render
 from django.utils.http import urlsafe_base64_decode
 from rest_framework.response import Response
@@ -20,6 +21,7 @@ from psycopg2 import OperationalError as Psycopg2OperationalError
 from config import settings
 from user.models import User
 from config.redis_client import redis_client
+from config.utils.security import sha256_hash
 from config.utils.validators import validate_max_lengths
 from config.utils.send_email import send_congratulations_email, send_verification_email
 from config.utils.token_service import (generate_access_token,
@@ -34,7 +36,6 @@ from config.utils.token_service import (generate_access_token,
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def user_signup(request):
-    logger = logging.getLogger(__name__)
     email = request.data.get('email')
     username = request.data.get('username')
     password = request.data.get('password')
@@ -52,16 +53,15 @@ def user_signup(request):
     if not is_valid:
         return error_response
     try:
-        User = get_user_model()
-        user = User(email=email, username=username)
-        user.set_password(password)
-        user.save()
-        logger.info(f"[+] User {user.uid} created an account.")
-        token = generate_email_verification_token(user)
-        send_verification_email(user, token)
+        print(f"[+] User {username} initiated account creation.")
+        token, exp = generate_email_verification_token(username)
+        ttl = max(0, exp - int(time.time()))
+        redis_client.setex(f'{sha256_hash(username)}_pass', ttl, make_password(password))
+        redis_client.setex(f'{sha256_hash(username)}_email', ttl, email)
+        send_verification_email(username, email, token)
         return Response({
             'status': True,
-            'message': 'Verification email sent. Please verify to complete signup',
+            'message': 'Verification email sent. (verification link expires in 1 hour)',
         })
     except IntegrityError as err:
         err_msg = str(err)
@@ -72,19 +72,19 @@ def user_signup(request):
             'duplicate': dup_field
         })
     except (Psycopg2OperationalError, DjangoOperationalError):
-        logger.error("Database error:\n" + traceback.format_exc())
+        print("Database error:\n" + traceback.format_exc())
         return Response({
             'status': False,
             'message': 'Database connection lost. Please try again later.'
         })
     except redis.exceptions.ConnectionError:
-        logger.error("Redis error:\n" + traceback.format_exc())
+        print("Redis error:\n" + traceback.format_exc())
         return Response({
             'status': False,
             'message': 'Redis connection lost. Please try again later.'
         })
     except Exception as ex:
-        logger.error("Unhandled exception:\n" + traceback.format_exc())
+        print("Unhandled exception:\n" + traceback.format_exc())
         return Response({
             'status': False,
             'message': f'Unexpected error occurred: {str(ex)}'
@@ -135,7 +135,6 @@ def user_login(request):
 @authentication_classes([])
 @permission_classes([AllowAny])
 def user_logout(request):
-    logger = logging.getLogger(__name__)
     authorization_header = request.headers.get('Authorization')
     access_token = None
     refresh_token = request.headers.get('refresh-token')
@@ -162,7 +161,7 @@ def user_logout(request):
             pass
     # Step 3: If both are missing or expired
     if not access_token and not refresh_token:
-        logger.info('[+] No valid token found. Possibly already logged out')
+        print('[+] No valid token found. Possibly already logged out')
         return Response({
             'status': True,
             'message': 'Logged out',
@@ -184,7 +183,7 @@ def user_logout(request):
             redis_client.setex(access_token, ttl, 'blacklisted')
 
     if already_blacklisted:
-        logger.info("[+] Already logged out")
+        print("[+] Already logged out")
     else:
         # Step 5: Add to Redis blacklist with TTL based on token expiry
         if access_token and payload:
@@ -261,10 +260,10 @@ def verify_email_view(request):
             'reason': 'Missing verification data',
         })
     try:
-        uid = urlsafe_base64_decode(uidb64).decode()
-        user = User.objects.only('uid').get(uid=uid)
-    except (TypeError, ValueError, OverflowError, User.DoesNotExist):
-        print(f"Verification failed for uid={uidb64}")
+        username = urlsafe_base64_decode(uidb64).decode()
+
+    except (TypeError, ValueError, OverflowError):
+        print(f"[-] Verification failed for uid={uidb64}")
         return render(request, 'user/verification_failed.html', {
             'reason': 'Invalid verification link.',
         })
@@ -272,14 +271,31 @@ def verify_email_view(request):
     try:
         # Check if uidb64 and token data aligns to avoid any invalid request attempts
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=['HS256'])
-        if payload['user_id'] != uid:
+        if payload['username'] != sha256_hash(username):
             return render(request, 'user/verification_failed.html', {
                 'reason': 'Invalid verification link.',
             })
-        # Update verify email flag
-        user.is_email_verified = True
+        if User.objects.filter(username=username).exists():
+            return render(request, 'user/verification_failed.html', {
+                'reason': 'Account already exists or link was reused',
+            })
+        password = redis_client.get(f"{sha256_hash(username)}_pass").decode()
+        email = redis_client.get(f"{sha256_hash(username)}_email").decode()
+        if not email or not password:
+            return render(request, 'user/verification_failed.html', {
+                'reason': 'The verification link has expired or is no longer valid.',
+            })
+        # Create User
+        user = User(
+            username=username,
+            email=email,
+            password=password,
+            is_email_verified=True,
+        )
         user.save()
         print(f"[✓] Email verified for {user.uid}")
+        redis_client.delete(f"{sha256_hash(username)}_pass")
+        redis_client.delete(f"{sha256_hash(username)}_email")
         ttl = max(0, payload['exp'] - int(time.time()))
         redis_client.setex(token, ttl, 'blacklisted')
         send_congratulations_email(user)
@@ -312,7 +328,6 @@ def user_profile(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def user_update(request):
-    logger = logging.getLogger(__name__)
     user = request.user
     # Validate lengths
     is_valid, error_response = validate_max_lengths(request.data, {
@@ -343,12 +358,12 @@ def user_update(request):
                 'duplicate': dup_field
             })
         except (Psycopg2OperationalError, DjangoOperationalError):
-            logger.error("Database error:\n" + traceback.format_exc())
+            print("Database error:\n" + traceback.format_exc())
             return Response({
                 'status': False,
                 'message': 'Database connection lost. Please try again later.'
             })
-    logger.info(f" [+] User {user.uid} updated account info.")
+    print(f" [+] User {user.uid} updated account info.")
     return Response({
         'status': True,
         'message': 'User updated',
@@ -357,17 +372,16 @@ def user_update(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def user_delete(request):
-    logger = logging.getLogger(__name__)
     try:
         uid = request.user.uid
         request.user.delete()
-        logger.info(f" [+] User {uid} deleted their account.")
+        print(f" [+] User {uid} deleted their account.")
         return Response({
             'status': True,
             'message': 'User deleted',
         })
     except Exception as err:
-        logger.error("Unhandled exception: %s", err)
+        print("Unhandled exception: %s", err)
         return Response({
             'status': False,
             'message': str(err),

@@ -2,6 +2,8 @@ from datetime import datetime, timedelta, timezone
 import jwt, time
 from django.conf import settings
 from config.redis_client import redis_client
+from config.utils.security import sha256_hash
+
 
 def generate_access_token(user):
     now = datetime.now(timezone.utc)
@@ -25,12 +27,9 @@ def generate_refresh_token(user):
     redis_client.delete(refresh_token)
     return refresh_token
 
-def generate_email_verification_token(user):
+def generate_email_verification_token(username: str):
     payload = {
-        'user_id': str(user.uid),
-        'username': str(user.username),
-        'email': str(user.email),
-        'password': str(user.password),
-        'exp': int(time.time()) + 60 * 60 * 24,  # expires in 24 hours
+        'username': sha256_hash(str(username)),
+        'exp': int(time.time()) + 60 * 60 * 1,  # expires in 1 hour
     }
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm='HS256')
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm='HS256'), payload['exp']
