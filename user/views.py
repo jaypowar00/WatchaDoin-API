@@ -53,6 +53,16 @@ def user_signup(request):
     if not is_valid:
         return error_response
     try:
+        if User.objects.filter(username=username).exists():
+            return Response({
+                'status': False,
+                'message': f"Username {username} is already taken."
+            })
+        elif User.objects.filter(email=email).exists():
+            return Response({
+                'status': False,
+                'message': f"Email {email} is already registered."
+            })
         print(f"[+] User {username} initiated account creation.")
         token, exp = generate_email_verification_token(username)
         ttl = max(0, exp - int(time.time()))
@@ -279,8 +289,8 @@ def verify_email_view(request):
             return render(request, 'user/verification_failed.html', {
                 'reason': 'Account already exists or link was reused',
             })
-        password = redis_client.get(f"{sha256_hash(username)}_pass").decode()
-        email = redis_client.get(f"{sha256_hash(username)}_email").decode()
+        password = redis_client.get(f"{sha256_hash(username)}_pass")
+        email = redis_client.get(f"{sha256_hash(username)}_email")
         if not email or not password:
             return render(request, 'user/verification_failed.html', {
                 'reason': 'The verification link has expired or is no longer valid.',
