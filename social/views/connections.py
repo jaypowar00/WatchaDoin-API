@@ -17,10 +17,11 @@ from social.utils.connections.connection_update_with_user import connection_upda
 @permission_classes([IsAuthenticated])
 def followings_list(request):
 	user: User = request.user
+	order = '' if request.GET.get('order', '-') == '1' else '-'
 	try:
 		followings = user.following.select_related('follower').only(
-			'id', 'follower_id', 'followed_on', 'follower__username',
-		)
+			'id', 'follower_id', 'followed_on', 'notifications_enabled', 'follower__username',
+		).order_by(f'{order}followed_on')
 		ser_followings = FollowingsSerializer(followings, many=True).data
 		return Response({
 			'status': True,
@@ -39,10 +40,11 @@ def followings_list(request):
 @permission_classes([IsAuthenticated])
 def followers_list(request):
 	user: User = request.user
+	order = '' if request.GET.get('order', '-') == '1' else '-'
 	try:
 		followers = user.followers.select_related('user').only(
 			'id', 'user_id', 'followed_on', 'user__username',
-		)
+		).order_by(f'{order}followed_on')
 		ser_followers = FollowersSerializer(followers, many=True).data
 		return Response({
 			'status': True,
