@@ -6,7 +6,7 @@ from user.models import User
 
 
 class Activity(models.Model):
-	id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+	id = models.AutoField(primary_key=True, editable=False)
 	name = models.CharField(max_length=100, null=False, blank=False)
 	emoji = models.CharField(max_length=50, default="🔮")
 	is_builtin = models.BooleanField(default=False)
@@ -15,13 +15,13 @@ class Activity(models.Model):
 
 
 class ActivityTimer(models.Model):
-	id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+	id = models.AutoField(primary_key=True, editable=False)
 	activity = models.ForeignKey(Activity, on_delete=models.CASCADE, related_name='timer')
 	duration = models.DurationField(default=timedelta(minutes=10))
 
 
 class ActivityStatus(models.Model):
-	id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+	id = models.AutoField(primary_key=True, editable=False)
 	user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='user_status')
 	activity = models.ForeignKey(Activity, on_delete=models.CASCADE, related_name='activity_status')
 	duration = models.DurationField(default=timedelta(minutes=10))

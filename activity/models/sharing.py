@@ -10,11 +10,11 @@ class ShareType(models.TextChoices):
 
 
 class PrivateShareList(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.AutoField(primary_key=True, editable=False)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='private_share_list')
     name = models.CharField(max_length=120)
 
 class PrivateShareListMember(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.AutoField(primary_key=True, editable=False)
     list = models.ForeignKey(PrivateShareList, on_delete=models.CASCADE, related_name='member')
     follower = models.ForeignKey(User, on_delete=models.CASCADE, related_name='follower')
