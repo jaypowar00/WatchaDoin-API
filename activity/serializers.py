@@ -13,3 +13,9 @@ class ActivitySerializer(serializers.ModelSerializer):
 		activity_timers = ActivityTimer.objects.only('duration').filter(activity=obj)
 		return [int(timer.duration.total_seconds() // 60) for timer in activity_timers]
 
+
+class ActivityTimerSerializer(serializers.ModelSerializer):
+
+	class Meta:
+		model = ActivityTimer
+		fields = ['id', 'duration']
