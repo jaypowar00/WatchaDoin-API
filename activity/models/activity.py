@@ -1,6 +1,6 @@
-import uuid
 from datetime import timedelta
 from django.db import models
+from django.utils import timezone
 from activity.models.sharing import ShareType
 from user.models import User
 
@@ -25,6 +25,6 @@ class ActivityStatus(models.Model):
 	user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='user_status')
 	activity = models.ForeignKey(Activity, on_delete=models.CASCADE, related_name='activity_status')
 	duration = models.DurationField(default=timedelta(minutes=10))
-	started_at = models.DateTimeField(auto_now_add=True)
+	started_at = models.DateTimeField(default=timezone.now)
 	is_finished = models.BooleanField(default=False)
 	share_type = models.CharField(max_length=10, choices=ShareType.choices)
