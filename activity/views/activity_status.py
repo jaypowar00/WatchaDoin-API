@@ -1,20 +1,22 @@
 # Stdlib
-import time
 import traceback
 from datetime import timedelta
 from dateutil.parser import parse, ParserError
 
 # Third-party
 from django.db import DatabaseError
-from rest_framework.utils import timezone
+from django.db.models import F
+from django.utils import timezone
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import api_view, permission_classes
 
 # Project/local
-from activity.models.sharing import ShareType
-from activity.models.activity import Activity, ActivityStatus, ActivityTimer
 from user.models import User
+from social.models import Follower
+from activity.models.sharing import ShareType
+from activity.models.activity import Activity, ActivityStatus
+from activity.serializers import ActivityStatusSerializer
 
 
 @api_view(['POST'])
@@ -39,7 +41,14 @@ def start_activity(request):
 			'status': False,
 			'message': "Couldn't start activity. Activity doesnt exists"
 		})
-	if ActivityStatus.objects.filter(activity=activity, user=user, is_finished=False).exists():
+	ActivityStatus.objects.filter(
+		user=user,
+		activity=activity,
+		is_finished=False,
+		started_at__lt=timezone.now() - F('duration')
+	).update(is_finished=True)
+	temp_activity_status = ActivityStatus.objects.filter(user=user, activity=activity, is_finished=False)
+	if temp_activity_status.exists():
 		return Response({
 			'status': False,
 			'message': "This activity is currently ongoing",
@@ -48,7 +57,7 @@ def start_activity(request):
 	try:
 		started_at = parse(start)
 	except ParserError as ex:
-		started_at = timezone.datetime.now()
+		started_at = timezone.now()
 	share_type = ShareType.FOLLOWERS if share_type not in ShareType.values else share_type
 	try:
 		activity_status = ActivityStatus(
@@ -83,8 +92,14 @@ def finish_activity(request):
 			'message': "Couldn't finish activity. missing activity_status_id"
 		})
 	try:
-		activity_status = ActivityStatus.objects.only('started_at', 'duration',).get(pk=activity_status_id)
-		elapsed = timezone.datetime.now() - activity_status.started_at
+		activity_status = ActivityStatus.objects.only('started_at', 'duration',
+		                                              'is_finished').get(pk=activity_status_id)
+		if activity_status.is_finished:
+			return Response({
+				'status': True,
+				'message': "Activity is already finished"
+			})
+		elapsed = timezone.now() - activity_status.started_at
 		if elapsed < activity_status.duration:
 			activity_status.duration = elapsed
 		activity_status.is_finished = True
@@ -104,4 +119,69 @@ def finish_activity(request):
 		return Response({
 			'status': False,
 			'message': f"Couldn't finish activity. Database error {ex}",
+		})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def fetch_activities(request):
+	user: User = request.user
+	state = request.GET.get('state')
+	uid = request.GET.get('uid')
+	state = 'ongoing' if state == 'ongoing' else 'finished' if state else 'both'
+	activities = {}
+	try:
+		if uid:
+			target_user = User.objects.get(uid=uid)
+			if not Follower.objects.filter(user=user, follower=target_user).exists():
+				return Response({
+					'status': False,
+					'message': "Couldn't fetch activities. You don't follow this user"
+				})
+			user = target_user
+		ActivityStatus.objects.filter(
+			user=user,
+			is_finished=False,
+			started_at__lt=timezone.now() - F('duration')
+		).update(is_finished=True)
+		if state != 'both':
+			activity_statuses = (ActivityStatus.objects
+			                     .only('id', 'activity__name', 'started_at',
+			                           'duration', 'is_finished', 'share_type')
+			                     .filter(user=user, is_finished=False if state == 'ongoing' else True)
+			                     .order_by('-started_at'))
+			if state == "ongoing":
+				activity_statuses = [a for a in activity_statuses if not a.is_finished_virtual]
+			ser_activity_statuses = ActivityStatusSerializer(activity_statuses, many=True).data
+			activities[state] = ser_activity_statuses
+		else:
+			ongoing_activities = (ActivityStatus.objects
+			                     .only('id', 'activity__name', 'started_at',
+			                           'duration', 'is_finished', 'share_type')
+			                     .filter(user=user, is_finished=False)
+			                     .order_by('-started_at'))
+			finished_activities = (ActivityStatus.objects
+			                      .only('id', 'activity__name', 'started_at',
+			                            'duration', 'is_finished', 'share_type')
+			                      .filter(user=user, is_finished=True)
+			                      .order_by('-started_at'))
+			ser_ongoing_activities = ActivityStatusSerializer(ongoing_activities, many=True).data
+			ser_finished_activities = ActivityStatusSerializer(finished_activities, many=True).data
+			activities['ongoing'] = ser_ongoing_activities
+			activities['finished'] = ser_finished_activities
+		return Response({
+			'status': True,
+			'activities': activities
+		})
+	except User.DoesNotExist:
+		return Response({
+			'status': False,
+			'message': "Couldn't fetch activities. User doesn't exist"
+		})
+	except DatabaseError as ex:
+		print(ex)
+		print(f"traceback.format_exc(): {traceback.format_exc()}")
+		return Response({
+			'status': False,
+			'message': f"Couldn't fetch activities. Database error {ex}",
 		})

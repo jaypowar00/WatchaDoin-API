@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models.activity import Activity, ActivityTimer
+from .models.activity import Activity, ActivityStatus, ActivityTimer
 
 
 class ActivitySerializer(serializers.ModelSerializer):
@@ -19,3 +19,15 @@ class ActivityTimerSerializer(serializers.ModelSerializer):
 	class Meta:
 		model = ActivityTimer
 		fields = ['id', 'duration']
+
+
+class ActivityStatusSerializer(serializers.ModelSerializer):
+	activity_name = serializers.CharField(source='activity.name', read_only=True)
+	is_finished = serializers.SerializerMethodField()
+
+	class Meta:
+		model = ActivityStatus
+		fields = ['id', 'activity_name', 'started_at', 'duration', 'is_finished', 'share_type']
+
+	def get_is_finished(self, obj):
+		return obj.is_finished_virtual

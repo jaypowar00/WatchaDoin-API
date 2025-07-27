@@ -28,3 +28,12 @@ class ActivityStatus(models.Model):
 	started_at = models.DateTimeField(default=timezone.now)
 	is_finished = models.BooleanField(default=False)
 	share_type = models.CharField(max_length=10, choices=ShareType.choices)
+
+	@property
+	def is_finished_virtual(self):
+		if self.is_finished:
+			return True
+		# Check if current time is past started_at + duration
+		if timezone.now() >= self.started_at + self.duration:
+			return True
+		return False
